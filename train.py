@@ -3,7 +3,7 @@
 
 import os
 import utils
-import lm_nets
+from datetime import datetime
 
 import random
 import numpy as np
@@ -102,6 +102,8 @@ def main():
                         default=1234, help='random_seed')
     parser.add_argument('--n_class', dest='n_class', type=int,
                         default=2, help='n_class')
+    parser.add_argument('--n_vocab', dest='n_vocab', type=int,
+                        default=-1, help='n_vocab')
     parser.add_argument('--word_only', dest='word_only', type=int,
                         default=0, help='word_only')
     # iVAT
@@ -122,6 +124,8 @@ def main():
                         type=int, default=0, help='use_seq_labeling')
     parser.add_argument('--use_bilstm', dest='use_bilstm',
                         type=int, default=0, help='use_bilstm')
+    parser.add_argument('--use_w2v_flag', dest='use_w2v_flag',
+                        type=int, default=0, help='use_w2v_flag')
 
     args = parser.parse_args()
     batchsize = args.batchsize
@@ -153,12 +157,12 @@ def main():
         n_class = 2
     # TODO: add other dataset code
     elif args.dataset == 'fce':
-        vocab, doc_counts, dataset, lm_dataset, w2v = utils.load_fce(lower=args.lower, min_count=args.min_count, ignore_unk=False, use_w2v_flag=0, use_semi_data=args.use_semi_data)
+        vocab, doc_counts, dataset, lm_dataset, w2v = utils.load_fce(lower=args.lower, min_count=args.min_count, ignore_unk=False, use_w2v_flag=args.use_w2v_flag, use_semi_data=args.use_semi_data)
         (train_x, train_x_len, train_y,
          dev_x, dev_x_len, dev_y,
          test_x, test_x_len, test_y) = dataset
         vocab_count = doc_counts
-        train_vocab_size = len(vocab)
+        t_vocab = len(vocab)
         lm_dataset = (train_x, train_x_len)
 
     if args.use_semi_data:
@@ -174,7 +178,10 @@ def main():
         cuda.get_device(args.gpu).use()
         xp.random.seed(args.random_seed)
 
-    n_vocab = len(vocab)
+    if args.n_vocab > 0:
+        n_vocab = args.n_vocab
+    else:
+        n_vocab = len(vocab)
     model = nets.uniLSTM_iVAT(n_vocab=n_vocab, emb_dim=args.emb_dim,
                              hidden_dim=args.hidden_dim,
                              use_dropout=args.dropout, n_layers=args.n_layers,
@@ -236,6 +243,9 @@ def main():
         chainer.config.enable_backprop = False
         iteration_list = range(0, len(x_set), batchsize)
         correct_cnt = 0
+        pos_cnt = 0.0
+        gt_cnt = 0.0
+        detect_cnt = 0.0
         total_cnt = 0.0
         predicted_np = []
 
@@ -245,7 +255,7 @@ def main():
 
             if args.use_seq_labeling:
                 # for sequence labeling (Grammaly error detection)
-                y_flat = np.concatenate([train_y[_i] for _i in sample_idx], axis=0).astype(np.int32)
+                y_flat = np.concatenate(y_set[index:index + batchsize], axis=0).astype(np.int32)
                 y = to_gpu(y_flat)
             else:
                 y = to_gpu(y_set[index:index + batchsize])
@@ -253,11 +263,18 @@ def main():
 
             predict = xp.argmax(output.data, axis=1)
             correct_cnt += xp.sum(predict == y)
+            pos_cnt += xp.sum((predict == 1) & (y == 1))
+            gt_cnt += xp.sum(y)
+            detect_cnt += xp.sum(predict)
+
             total_cnt += len(y)
 
         accuracy = (correct_cnt / total_cnt) * 100.0
+        recall = pos_cnt * 100.0 / gt_cnt
+        precision = pos_cnt * 100.0 / detect_cnt
+        f_half = (1.25 * recall * precision ) / (recall + 0.25 * precision)
         chainer.config.enable_backprop = True
-        return accuracy
+        return f_half, accuracy
 
     def get_unlabled(perm_semi, i_index):
         index = i_index * batchsize_semi
@@ -274,24 +291,26 @@ def main():
     if args.freeze_word_emb:
         model.freeze_word_emb()
 
-    prev_dev_accuracy = 0.0
+    prev_dev_metric = 0.0
     global_step = 0.0
+    total_time = 0.0
+    global_test = 0.0
     adv_rep_num_statics = {}
     adv_rep_pos_statics = {}
 
     if args.eval:
-        dev_accuracy = evaluate(dev_x, dev_x_len, dev_y)
-        log_str = ' [dev] accuracy:{}, length:{}'.format(str(dev_accuracy))
+        dev_f, dev_accuracy = evaluate(dev_x, dev_x_len, dev_y)
+        log_str = ' [dev] f0.5:{}, accuracy:{}'.format(str(dev_f), str(dev_accuracy))
         logging.info(log_str)
 
         # test
-        test_accuracy = evaluate(test_x, test_x_len, test_y)
-        log_str = ' [test] accuracy:{}, length:{}'.format(str(test_accuracy))
+        test_f, test_accuracy = evaluate(test_x, test_x_len, test_y)
+        log_str = ' [test] f0.5:{}, accuracy:{}'.format(str(test_f), str(test_accuracy))
         logging.info(log_str)
 
 
     for epoch in range(args.n_epoch):
-        logging.info('epoch:' + str(epoch))
+        start_time = datetime.now()
         # train
         model.cleargrads()
         chainer.config.train = True
@@ -410,24 +429,36 @@ def main():
 
         logging.info(' [train] sum_loss: {}'.format(sum_loss / N))
         logging.info(' [train] apha:{}, global_step:{}'.format(opt.hyperparam.alpha, global_step))
-        logging.info(' [train] accuracy:{}'.format(accuracy))
+        prlogging.infoint(' [train] accuracy:{}'.format(accuracy))
 
 
         model.set_train(False)
         # dev
-        dev_accuracy = evaluate(dev_x, dev_x_len, dev_y)
-        log_str = ' [dev] accuracy:{}'.format(str(dev_accuracy))
+        dev_f, dev_accuracy = evaluate(dev_x, dev_x_len, dev_y)
+        log_str = ' [dev] f0.5:{}, accuracy:{}'.format(str(dev_f), str(dev_accuracy))
         logging.info(log_str)
 
         # test
-        test_accuracy = evaluate(test_x, test_x_len, test_y)
-        log_str = ' [test] accuracy:{}'.format(str(test_accuracy))
+        test_f, test_accuracy = evaluate(test_x, test_x_len, test_y)
+        log_str = ' [test] f0.5:{}, accuracy:{}'.format(str(test_f), str(test_accuracy))
         logging.info(log_str)
+        delta_time = (datetime.now() - start_time).seconds
+        logging.info('[time] epoch done in:{:.2f} mins'.format(delta_time / 60.0))
+        total_time += delta_time
 
         last_epoch_flag = args.n_epoch - 1 == epoch
-        if prev_dev_accuracy < dev_accuracy:
 
-            logging.info(' => '.join([str(prev_dev_accuracy), str(dev_accuracy)]))
+        if args.use_seq_labeling:
+            metric = dev_f
+        else:
+            metric = dev_accuracy
+
+        if prev_dev_metric < metric:
+            print(' => '.join([str(prev_dev_metric), str(metric)]))
+            if args.use_seq_labeling:
+                global_test = test_f
+            else:
+                global_test = test_accuracy
             result_str = 'dev_acc_' + str(dev_accuracy)
             result_str += '_test_acc_' + str(test_accuracy)
             model_filename = './models/' + '_'.join([args.save_name,
@@ -435,7 +466,7 @@ def main():
             # if len(sentences_train_list) == 1:
             serializers.save_hdf5(model_filename + '.model', model)
 
-            prev_dev_accuracy = dev_accuracy
+            prev_dev_metric = metric
 
 
         nn_update_flag = args.update_nearest_epoch > 0 and (epoch % args.update_nearest_epoch == 0)
@@ -445,6 +476,8 @@ def main():
             x_length = None
             y = None
             model.compute_all_nearest_words(top_k=args.nn_k)
+
+    logging.info('[ALL DONE] {} test acc in {} mins'.format(str(global_test), str(total_time / 60.0)))
 
 
 if __name__ == '__main__':

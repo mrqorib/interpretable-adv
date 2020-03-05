@@ -162,7 +162,7 @@ def load_dataset_imdb(include_pretrain=False, convert_vocab=True, lower=True,
 
 # FCE
 
-def load_file_preprocess_fce_replace(filename, lower=True, ign_eos=False):
+def load_file_preprocess_fce_replace_original(filename, lower=True, ign_eos=False):
     dataset_correct = []
     dataset_wrong = []
     y_tags = []
@@ -188,10 +188,41 @@ def load_file_preprocess_fce_replace(filename, lower=True, ign_eos=False):
 
     return dataset_correct, dataset_wrong, y_tags
 
+def load_file_preprocess_fce(filename, lower=True, ign_eos=False):  
+    add_eos = [1]
+    if ign_eos is True:
+        add_eos = []
+
+    sentences = []
+    labels =[]
+    with open(filename, 'r') as f:
+        sent_x = []
+        sent_y = []
+        for l in f:
+            if len(l) < 2:
+                sentences.append(sent_x)
+                labels.append(sent_y + add_eos)
+                sent_x = []
+                sent_y = []
+            else:
+                line_parts = l.strip().split('\t')
+                word = line_parts[0].strip()
+                if lower:
+                    word = word.lower()
+                if line_parts[1].strip().lower() == 'c':
+                    label = 0
+                elif line_parts[1].strip().lower() == 'i':
+                    label = 1
+                else:
+                    raise ValueError('Unknown label {}\n'.format(line_parts[1]))
+                sent_x.append(word)
+                sent_y.append(label)
+
+    return sentences, labels
 
 # [WIP]
 def load_fce(lower=False, min_count=1, ignore_unk=False, use_all_for_lm=False, use_char=False, use_w2v_flag=0, use_semi_data=False):
-    dirpath = './gramatical_error/fce-error-detection/tsv/'
+    dirpath = './data/grammatical_error/fce-error-detection/tsv/'
     # TODO: replace `::` => split to two differenct text
     ign_eos = True
     train_x_raw, train_y = load_file_preprocess_fce(dirpath + 'fce-public.train.original.tsv', lower=lower, ign_eos=ign_eos)
@@ -204,25 +235,25 @@ def load_fce(lower=False, min_count=1, ignore_unk=False, use_all_for_lm=False, u
         vocab['<unk>'] = 1  # EOS
 
         doc_counts = {}
-        embedding = './grammatical-error-detection/embedding.txt' # /GWE [Kaneko et al., 2017]
-        f = open(embedding)
-        f.readline()
-        # import gensim
-        # from gensim.models.keyedvectors import KeyedVectors
-        # w2v = KeyedVectors.load_word2vec_format(embedding, binary=False)
-        w2v = {}
-        vecs = []
-        for l in f:
-            l = l.strip()
-            w, vec = l.split(' ')[0], l.split(' ')[1:]
-            vec = np.array(vec).astype('f')
-            if lower:
-                w = w.lower()
-            if min_count == -1:
-                vocab[w] = len(vocab)
-            w2v[w] = vec
-            vecs.append(vec)
-        train_set = train_x_raw
+        embedding = './data/grammatical_error/embedding.txt' # /GWE [Kaneko et al., 2017]
+        with open(embedding) as f:
+            f.readline()
+            # import gensim
+            # from gensim.models.keyedvectors import KeyedVectors
+            # w2v = KeyedVectors.load_word2vec_format(embedding, binary=False)
+            w2v = {}
+            vecs = []
+            for l in f:
+                l = l.strip()
+                w, vec = l.split(' ')[0], l.split(' ')[1:]
+                vec = np.array(vec).astype('f')
+                if lower:
+                    w = w.lower()
+                if min_count == -1:
+                    vocab[w] = len(vocab)
+                w2v[w] = vec
+                vecs.append(vec)
+            train_set = train_x_raw
         # print 'train_set:', len(train_set)
         if min_count == -2:
             train_set = train_x_raw + dev_x_raw + test_x_raw
@@ -262,7 +293,7 @@ def load_fce(lower=False, min_count=1, ignore_unk=False, use_all_for_lm=False, u
         doc_counts = {}
         # w2v vocab:
         from gensim.models.keyedvectors import KeyedVectors
-        w2v_model = './GoogleNews-vectors-negative300.bin'
+        w2v_model = './data/grammatical_error/GoogleNews-vectors-negative300.bin'
         w2v = KeyedVectors.load_word2vec_format(w2v_model, binary=True)
 
         if min_count == -1:

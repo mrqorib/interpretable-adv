@@ -310,6 +310,7 @@ def main():
 
 
     for epoch in range(args.n_epoch):
+        logging.info('epoch:' + str(epoch))
         start_time = datetime.now()
         # train
         model.cleargrads()
@@ -429,7 +430,7 @@ def main():
 
         logging.info(' [train] sum_loss: {}'.format(sum_loss / N))
         logging.info(' [train] apha:{}, global_step:{}'.format(opt.hyperparam.alpha, global_step))
-        prlogging.infoint(' [train] accuracy:{}'.format(accuracy))
+        logging.infoint(' [train] accuracy:{}'.format(accuracy))
 
 
         model.set_train(False)
